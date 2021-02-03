@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2020 The Linux Foundation. All rights reserved.
+* Copyright (c) 2020-2021 The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -39,6 +39,8 @@
 // implementation being present. When this ifdef gets enabled in this header, the
 // client code will automatically get compiled.
 #define DISPLAY_CONFIG_API_LEVEL_0
+#define DISPLAY_CONFIG_API_LEVEL_1
+#define DISPLAY_CONFIG_API_LEVEL_2
 
 namespace DisplayConfig {
 
@@ -232,11 +234,43 @@ struct TUIEventParams {
   TUIEventType tui_event_type = TUIEventType::kNone;
 };
 
+struct SupportedModesParams {
+  uint32_t disp_id = 0;
+  uint32_t mode = 0;
+};
+
+struct PowerModeTiledParams {
+  uint64_t physical_disp_id = 0;
+  PowerMode power_mode = PowerMode::kOn;
+  uint32_t tile_h_loc = 0;
+  uint32_t tile_v_loc = 0;
+};
+
+struct PanelBrightnessTiledParams {
+  uint64_t physical_disp_id = 0;
+  uint32_t level = 255;
+  uint32_t tile_h_loc = 0;
+  uint32_t tile_v_loc = 0;
+};
+
+enum class WiderModePref : int {
+  kNoPreference,
+  kWiderAsyncMode,
+  kWiderSyncMode
+};
+
+struct WiderModePrefParams {
+  uint64_t physical_disp_id = 0;
+  WiderModePref mode_pref = WiderModePref::kNoPreference;
+};
+
 /* Callback Interface */
 class ConfigCallback {
  public:
-  virtual void NotifyCWBBufferDone(int error, const native_handle_t *buffer) { }
-  virtual void NotifyQsyncChange(bool qsync_enabled, int refresh_rate, int qsync_refresh_rate) { }
+  virtual void NotifyCWBBufferDone(int /* error */, const native_handle_t* /* buffer */ ) { }
+  virtual void NotifyQsyncChange(bool /* qsync_enabled */ , int /* refresh_rate */,
+                                 int /* qsync_refresh_rate */) { }
+  virtual void NotifyIdleStatus(bool /* is_idle */) { }
 
  protected:
   virtual ~ConfigCallback() { }
@@ -247,61 +281,91 @@ class ConfigCallback {
 /* Config Interface */
 class ConfigInterface {
  public:
-  virtual int IsDisplayConnected(DisplayType dpy, bool *connected) DEFAULT_RET
-  virtual int SetDisplayStatus(DisplayType dpy, ExternalStatus status) DEFAULT_RET
-  virtual int ConfigureDynRefreshRate(DynRefreshRateOp op, uint32_t refresh_rate) DEFAULT_RET
-  virtual int GetConfigCount(DisplayType dpy, uint32_t *count) DEFAULT_RET
-  virtual int GetActiveConfig(DisplayType dpy, uint32_t *config) DEFAULT_RET
-  virtual int SetActiveConfig(DisplayType dpy, uint32_t config) DEFAULT_RET
-  virtual int GetDisplayAttributes(uint32_t config_index, DisplayType dpy,
-                                   Attributes *attributes) DEFAULT_RET
-  virtual int SetPanelBrightness(uint32_t level) DEFAULT_RET
-  virtual int GetPanelBrightness(uint32_t *level) DEFAULT_RET
-  virtual int MinHdcpEncryptionLevelChanged(DisplayType dpy, uint32_t min_enc_level) DEFAULT_RET
+  virtual int IsDisplayConnected(DisplayType /* dpy */, bool* /* connected */) DEFAULT_RET
+  virtual int SetDisplayStatus(DisplayType /* dpy */, ExternalStatus /* status */) DEFAULT_RET
+  virtual int ConfigureDynRefreshRate(DynRefreshRateOp /* op */,
+                                      uint32_t /* refresh_rate */) DEFAULT_RET
+  virtual int GetConfigCount(DisplayType /* dpy */, uint32_t* /* count */) DEFAULT_RET
+  virtual int GetActiveConfig(DisplayType /* dpy */, uint32_t* /* config */) DEFAULT_RET
+  virtual int SetActiveConfig(DisplayType /* dpy */, uint32_t /* config */) DEFAULT_RET
+  virtual int GetDisplayAttributes(uint32_t /* config_index */, DisplayType /* dpy */,
+                                   Attributes* /* attributes */) DEFAULT_RET
+  virtual int SetPanelBrightness(uint32_t /* level */) DEFAULT_RET
+  virtual int GetPanelBrightness(uint32_t* /* level */) DEFAULT_RET
+  virtual int MinHdcpEncryptionLevelChanged(DisplayType /* dpy */,
+                                            uint32_t /* min_enc_level */) DEFAULT_RET
   virtual int RefreshScreen() DEFAULT_RET
-  virtual int ControlPartialUpdate(DisplayType dpy, bool enable) DEFAULT_RET
-  virtual int ToggleScreenUpdate(bool on) DEFAULT_RET
-  virtual int SetIdleTimeout(uint32_t value) DEFAULT_RET
-  virtual int GetHDRCapabilities(DisplayType dpy, HDRCapsParams *caps) DEFAULT_RET
-  virtual int SetCameraLaunchStatus(uint32_t on) DEFAULT_RET
-  virtual int DisplayBWTransactionPending(bool *status) DEFAULT_RET
-  virtual int SetDisplayAnimating(uint64_t display_id, bool animating) DEFAULT_RET
-  virtual int ControlIdlePowerCollapse(bool enable, bool synchronous) DEFAULT_RET
-  virtual int GetWriteBackCapabilities(bool *is_wb_ubwc_supported) DEFAULT_RET
-  virtual int SetDisplayDppsAdROI(uint32_t display_id, uint32_t h_start, uint32_t h_end,
-                                  uint32_t v_start, uint32_t v_end, uint32_t factor_in,
-                                  uint32_t factor_out) DEFAULT_RET
+  virtual int ControlPartialUpdate(DisplayType /* dpy */, bool /* enable */) DEFAULT_RET
+  virtual int ToggleScreenUpdate(bool /* on */) DEFAULT_RET
+  virtual int SetIdleTimeout(uint32_t /* value */) DEFAULT_RET
+  virtual int GetHDRCapabilities(DisplayType /* dpy */, HDRCapsParams* /* caps */) DEFAULT_RET
+  virtual int SetCameraLaunchStatus(uint32_t /* on */) DEFAULT_RET
+  virtual int DisplayBWTransactionPending(bool* /* status */) DEFAULT_RET
+  virtual int SetDisplayAnimating(uint64_t /* display_id */, bool /* animating */) DEFAULT_RET
+  virtual int ControlIdlePowerCollapse(bool /* enable */, bool /* synchronous */) DEFAULT_RET
+  virtual int GetWriteBackCapabilities(bool* /* is_wb_ubwc_supported */) DEFAULT_RET
+  virtual int SetDisplayDppsAdROI(uint32_t /* display_id */, uint32_t /* h_start */,
+                                  uint32_t /* h_end */, uint32_t /* v_start */,
+                                  uint32_t /* v_end */, uint32_t /* factor_in */,
+                                  uint32_t /* factor_out */) DEFAULT_RET
   virtual int UpdateVSyncSourceOnPowerModeOff() DEFAULT_RET
   virtual int UpdateVSyncSourceOnPowerModeDoze() DEFAULT_RET
-  virtual int SetPowerMode(uint32_t disp_id, PowerMode power_mode) DEFAULT_RET
-  virtual int IsPowerModeOverrideSupported(uint32_t disp_id, bool *supported) DEFAULT_RET
-  virtual int IsHDRSupported(uint32_t disp_id, bool *supported) DEFAULT_RET
-  virtual int IsWCGSupported(uint32_t disp_id, bool *supported) DEFAULT_RET
-  virtual int SetLayerAsMask(uint32_t disp_id, uint64_t layer_id) DEFAULT_RET
-  virtual int GetDebugProperty(const std::string prop_name, std::string *value) DEFAULT_RET
-  virtual int GetActiveBuiltinDisplayAttributes(Attributes *attr) DEFAULT_RET
-  virtual int SetPanelLuminanceAttributes(uint32_t disp_id, float min_lum,
-                                          float max_lum) DEFAULT_RET
-  virtual int IsBuiltInDisplay(uint32_t disp_id, bool *is_builtin) DEFAULT_RET
-  virtual int IsAsyncVDSCreationSupported(bool *supported) DEFAULT_RET
-  virtual int CreateVirtualDisplay(uint32_t width, uint32_t height, int format) DEFAULT_RET
-  virtual int GetSupportedDSIBitClks(uint32_t disp_id, std::vector<uint64_t> *bit_clks) DEFAULT_RET
-  virtual int GetDSIClk(uint32_t disp_id, uint64_t *bit_clk) DEFAULT_RET
-  virtual int SetDSIClk(uint32_t disp_id, uint64_t bit_clk) DEFAULT_RET
-  virtual int SetCWBOutputBuffer(uint32_t disp_id, const Rect rect, bool post_processed,
-                                 const native_handle_t *buffer) DEFAULT_RET
-  virtual int SetQsyncMode(uint32_t disp_id, QsyncMode mode) DEFAULT_RET
-  virtual int IsSmartPanelConfig(uint32_t disp_id, uint32_t config_id, bool *is_smart) DEFAULT_RET
-  virtual int IsRotatorSupportedFormat(int hal_format, bool ubwc, bool *supported) DEFAULT_RET
-  virtual int ControlQsyncCallback(bool enable) DEFAULT_RET
-  virtual int SendTUIEvent(DisplayType dpy, TUIEventType event_type) DEFAULT_RET
-  virtual int GetDisplayHwId(uint32_t disp_id, uint32_t *display_hw_id) DEFAULT_RET
-  virtual int GetSupportedDisplayRefreshRates(
-      DisplayType dpy, std::vector<uint32_t> *supported_refresh_rates) DEFAULT_RET
+  virtual int SetPowerMode(uint32_t /* disp_id */, PowerMode /* power_mode */) DEFAULT_RET
+  virtual int IsPowerModeOverrideSupported(uint32_t /* disp_id */,
+                                           bool* /* supported */) DEFAULT_RET
+  virtual int IsHDRSupported(uint32_t /* disp_id */, bool* /* supported */) DEFAULT_RET
+  virtual int IsWCGSupported(uint32_t /* disp_id */, bool* /* supported */) DEFAULT_RET
+  virtual int SetLayerAsMask(uint32_t /* disp_id */, uint64_t /* layer_id */) DEFAULT_RET
+  virtual int GetDebugProperty(const std::string /* prop_name */,
+                               std::string* /* value */) DEFAULT_RET
+  virtual int GetActiveBuiltinDisplayAttributes(Attributes* /* attr */) DEFAULT_RET
+  virtual int SetPanelLuminanceAttributes(uint32_t /* disp_id */, float /* min_lum */,
+                                          float /* max_lum */) DEFAULT_RET
+  virtual int IsBuiltInDisplay(uint32_t /* disp_id */, bool* /* is_builtin */) DEFAULT_RET
+  virtual int IsAsyncVDSCreationSupported(bool* /* supported */) DEFAULT_RET
+  virtual int CreateVirtualDisplay(uint32_t /* width */, uint32_t /* height */,
+                                   int /* format */) DEFAULT_RET
+  virtual int GetSupportedDSIBitClks(uint32_t /* disp_id */,
+                                     std::vector<uint64_t>* /* bit_clks */) DEFAULT_RET
+  virtual int GetDSIClk(uint32_t /* disp_id */, uint64_t* /* bit_clk */) DEFAULT_RET
+  virtual int SetDSIClk(uint32_t /* disp_id */, uint64_t /* bit_clk */) DEFAULT_RET
+  virtual int SetCWBOutputBuffer(uint32_t /* disp_id */,
+                                 const Rect /* rect */, bool /* post_processed */,
+                                 const native_handle_t* /* buffer */) DEFAULT_RET
+  virtual int SetQsyncMode(uint32_t /* disp_id */, QsyncMode /* mode */) DEFAULT_RET
+  virtual int IsSmartPanelConfig(uint32_t /* disp_id */, uint32_t /* config_id */,
+                                 bool* /* is_smart */) DEFAULT_RET
+  virtual int IsRotatorSupportedFormat(int /* hal_format */, bool /* ubwc */,
+                                       bool* /* supported */) DEFAULT_RET
+  virtual int ControlQsyncCallback(bool /* enable */) DEFAULT_RET
+  virtual int SendTUIEvent(DisplayType /* dpy */, TUIEventType /* event_type */) DEFAULT_RET
+  virtual int GetDisplayHwId(uint32_t /* disp_id */, uint32_t* /* display_hw_id */) DEFAULT_RET
+  virtual int GetSupportedDisplayRefreshRates(DisplayType /* dpy */, std::vector<uint32_t>*
+                                              /* supported_refresh_rates */) DEFAULT_RET
+  virtual int IsRCSupported(uint32_t /* disp_id */, bool* /* supported */) DEFAULT_RET
+  virtual int ControlIdleStatusCallback(bool /* enable */) DEFAULT_RET
+  virtual int IsSupportedConfigSwitch(uint32_t /* disp_id */, uint32_t /* config */,
+                                      bool* /* supported */) DEFAULT_RET
+  virtual int GetDisplayType(uint64_t /* physical_disp_id */,
+                             DisplayType* /* disp_type */) DEFAULT_RET
+  virtual int AllowIdleFallback() DEFAULT_RET
+  virtual int GetDisplayTileCount(uint64_t /* physical_disp_id */,
+                                  uint32_t* /* Display h tiles count (Min. 1 tile) */,
+                                  uint32_t* /* Display v tiles count (Min. 1 tile) */) DEFAULT_RET
+  virtual int SetPowerModeTiled(uint64_t /* physical_disp_id */, PowerMode /* power_mode */,
+                                uint32_t /* Display tile h location */,
+                                uint32_t /* Display tile v location */) DEFAULT_RET
+  virtual int SetPanelBrightnessTiled(uint64_t /* physical_disp_id */, uint32_t /* level */,
+                                      uint32_t /* Display tile h location */,
+                                      uint32_t /* Display tile v location */) DEFAULT_RET
+  virtual int SetWiderModePreference(uint64_t /* physical_disp_id */,
+                                     WiderModePref /* mode_pref */) DEFAULT_RET
 
   // deprecated APIs
-  virtual int GetDebugProperty(const std::string prop_name, std::string value) DEFAULT_RET
-  virtual int GetSupportedDSIBitClks(uint32_t disp_id, std::vector<uint64_t> bit_clks) DEFAULT_RET
+  virtual int GetDebugProperty(const std::string /* prop_name */,
+                               std::string /* value */) DEFAULT_RET
+  virtual int GetSupportedDSIBitClks(uint32_t /* disp_id */,
+                                     std::vector<uint64_t> /* bit_clks */) DEFAULT_RET
 
  protected:
   virtual ~ConfigInterface() { }

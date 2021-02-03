@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2020 The Linux Foundation. All rights reserved.
+* Copyright (c) 2020-2021 The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -78,6 +78,15 @@ enum OpCode {
   kSendTUIEvent = 42,
   kGetDisplayHwId = 43,
   kGetSupportedDisplayRefreshRates = 44,
+  kIsRCSupported = 45,
+  kControlIdleStatusCallback = 46,
+  kIsSupportedConfigSwitch = 47,
+  kGetDisplayType = 48,
+  kAllowIdleFallback = 49,
+  kGetDisplayTileCount = 50,
+  kSetPowerModeTiled = 51,
+  kSetPanelBrightnessTiled = 52,
+  kSetWiderModePref = 53,
 
   kDestroy = 0xFFFF, // Destroy sequence execution
 };

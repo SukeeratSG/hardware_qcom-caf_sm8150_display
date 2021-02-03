@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2020 The Linux Foundation. All rights reserved.
+* Copyright (c) 2020-2021 The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -27,6 +27,7 @@
 * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <cinttypes>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,6 @@ int DeviceImpl::CreateInstance(ClientContext *intf) {
     android::status_t status = device_obj_->IDisplayConfig::registerAsService();
     // Unable to start Display Config 2.0 service. Fail Init.
     if (status != android::OK) {
-      delete device_obj_;
       device_obj_ = nullptr;
       return -1;
     }
@@ -69,15 +69,40 @@ Return<void> DeviceImpl::registerClient(const hidl_string &client_name,
     return Void();
   }
 
+  if (!callback) {
+    ALOGW("IDisplayConfigCallback provided is null");
+  }
+
   uint64_t client_handle = static_cast<uint64_t>(client_id_++);
   std::shared_ptr<DeviceClientContext> device_client(new DeviceClientContext(callback));
   if (callback) {
     callback->linkToDeath(this, client_handle);
   }
+
+  if (!intf_) {
+    ALOGW("ConfigInterface is invalid");
+    _hidl_cb(error, 0);
+    return Void();
+  }
+
+  if (!device_client) {
+    ALOGW("Failed to initialize device client:%s", client_name.c_str());
+    _hidl_cb(error, 0);
+    return Void();
+  }
+
   ConfigInterface *intf = nullptr;
-  intf_->RegisterClientContext(device_client, &intf);
+  error = intf_->RegisterClientContext(device_client, &intf);
+
+  if (error) {
+    callback->unlinkToDeath(this);
+    return Void();
+  }
+
   device_client->SetDeviceConfigIntf(intf);
 
+  std::lock_guard<std::recursive_mutex> lock(death_service_mutex_);
+  ALOGI("Register client name: %s device client: %p", client_name.c_str(), device_client.get());
   display_config_map_.emplace(std::make_pair(client_handle, device_client));
   _hidl_cb(error, client_handle);
   return Void();
@@ -85,13 +110,14 @@ Return<void> DeviceImpl::registerClient(const hidl_string &client_name,
 
 void DeviceImpl::serviceDied(uint64_t client_handle,
                              const android::wp<::android::hidl::base::V1_0::IBase>& callback) {
-  std::lock_guard<std::mutex> lock(death_service_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(death_service_mutex_);
   auto itr = display_config_map_.find(client_handle);
   std::shared_ptr<DeviceClientContext> client = itr->second;
   if (client != NULL) {
     ConfigInterface *intf = client->GetDeviceConfigIntf();
     intf_->UnRegisterClientContext(intf);
     client.reset();
+    ALOGW("Client id:%" PRIu64 " service died", client_handle);
     display_config_map_.erase(itr);
   }
 }
@@ -135,6 +161,18 @@ void DeviceImpl::DeviceClientContext::NotifyQsyncChange(bool qsync_enabled, int3
   output_params.setToExternal(reinterpret_cast<uint8_t*>(&data), sizeof(data));
 
   auto status = callback_->perform(kControlQsyncCallback, output_params, {});
+  if (status.isDeadObject()) {
+    return;
+  }
+}
+
+void DeviceImpl::DeviceClientContext::NotifyIdleStatus(bool is_idle) {
+  bool data = {is_idle};
+  ByteStream output_params;
+
+  output_params.setToExternal(reinterpret_cast<uint8_t*>(&data), sizeof(data));
+
+  auto status = callback_->perform(kControlIdleStatusCallback, output_params, {});
   if (status.isDeadObject()) {
     return;
   }
@@ -693,6 +731,19 @@ void DeviceImpl::DeviceClientContext::ParseControlQsyncCallback(uint64_t client_
   _hidl_cb(error, {}, {});
 }
 
+void DeviceImpl::DeviceClientContext::ParseControlIdleStatusCallback(uint64_t client_handle,
+                                                                     const ByteStream &input_params,
+                                                                     perform_cb _hidl_cb) {
+  const bool *enable;
+
+  const uint8_t *data = input_params.data();
+  enable = reinterpret_cast<const bool*>(data);
+
+  int32_t error = intf_->ControlIdleStatusCallback(*enable);
+
+  _hidl_cb(error, {}, {});
+}
+
 void DeviceImpl::DeviceClientContext::ParseSendTUIEvent(const ByteStream &input_params,
                                                         perform_cb _hidl_cb) {
   const struct TUIEventParams *input_data =
@@ -704,6 +755,7 @@ void DeviceImpl::DeviceClientContext::ParseSendTUIEvent(const ByteStream &input_
 }
 
 void DeviceImpl::ParseDestroy(uint64_t client_handle, perform_cb _hidl_cb) {
+  std::lock_guard<std::recursive_mutex> lock(death_service_mutex_);
   auto itr = display_config_map_.find(client_handle);
   if (itr == display_config_map_.end()) {
     _hidl_cb(-EINVAL, {}, {});
@@ -747,18 +799,128 @@ void DeviceImpl::DeviceClientContext::ParseGetSupportedDisplayRefreshRates(
 
   uint32_t *refresh_rates_data =
       reinterpret_cast<uint32_t *>(malloc(sizeof(uint32_t) * refresh_rates.size()));
-  for (int i = 0; i < refresh_rates.size(); i++) {
-    refresh_rates_data[i] = refresh_rates[i];
+  if (refresh_rates_data) {
+    for (int i = 0; i < refresh_rates.size(); i++) {
+      refresh_rates_data[i] = refresh_rates[i];
+    }
+    output_params.setToExternal(reinterpret_cast<uint8_t *>(refresh_rates_data),
+                                sizeof(uint32_t) * refresh_rates.size());
+    _hidl_cb(error, output_params, {});
+  } else {
+    _hidl_cb(-EINVAL, {}, {});
   }
-  output_params.setToExternal(reinterpret_cast<uint8_t *>(refresh_rates_data),
-                              sizeof(uint32_t) * refresh_rates.size());
+}
+
+void DeviceImpl::DeviceClientContext::ParseIsRCSupported(const ByteStream &input_params,
+                                                         perform_cb _hidl_cb) {
+  const uint8_t *data = input_params.data();
+  const uint32_t *disp_id = reinterpret_cast<const uint32_t*>(data);
+  bool supported = false;
+  int32_t error = intf_->IsRCSupported(*disp_id, &supported);
+  ByteStream output_params;
+  output_params.setToExternal(reinterpret_cast<uint8_t*>(&supported), sizeof(bool));
+
   _hidl_cb(error, output_params, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseIsSupportedConfigSwitch(const ByteStream &input_params,
+                                                                 perform_cb _hidl_cb) {
+  if (!intf_) {
+    _hidl_cb(-EINVAL, {}, {});
+    return;
+  }
+
+  const struct SupportedModesParams *supported_modes_data;
+  const uint8_t *data = input_params.data();
+  bool supported = false;
+  ByteStream output_params;
+  supported_modes_data = reinterpret_cast<const SupportedModesParams*>(data);
+
+  int32_t error = intf_->IsSupportedConfigSwitch(supported_modes_data->disp_id,
+                                               supported_modes_data->mode, &supported);
+  output_params.setToExternal(reinterpret_cast<uint8_t*>(&supported), sizeof(bool));
+  _hidl_cb(error, output_params, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseGetDisplayType(const ByteStream &input_params,
+                                                          perform_cb _hidl_cb) {
+  const uint8_t *data = input_params.data();
+  const uint64_t *physical_disp_id = reinterpret_cast<const uint64_t*>(data);
+  DisplayType disp_type = DisplayConfig::DisplayType::kInvalid;
+  int32_t error = intf_->GetDisplayType(*physical_disp_id, &disp_type);
+  ByteStream output_params;
+  output_params.setToExternal(reinterpret_cast<uint8_t*>(&disp_type), sizeof(DisplayType));
+
+  _hidl_cb(error, output_params, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseAllowIdleFallback(perform_cb _hidl_cb) {
+  int32_t error = intf_->AllowIdleFallback();
+  _hidl_cb(error, {}, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseGetDisplayTileCount(const ByteStream &input_params,
+                                                               perform_cb _hidl_cb) {
+  const uint64_t *data = reinterpret_cast<const uint64_t*>(input_params.data());
+  uint64_t physical_disp_id = data ? *data : 0;
+  uint32_t num_tiles[2] = {0, 0};
+
+  int32_t error = intf_->GetDisplayTileCount(physical_disp_id, &num_tiles[0], &num_tiles[1]);
+  ByteStream output_params;
+  output_params.setToExternal(reinterpret_cast<uint8_t*>(&num_tiles),
+                              sizeof(num_tiles) * sizeof(uint32_t));
+
+  _hidl_cb(error, output_params, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseSetPowerModeTiled(const ByteStream &input_params,
+                                                             perform_cb _hidl_cb) {
+  struct PowerModeTiledParams set_power_mode_tiled_data = {};
+
+  const uint8_t *data = input_params.data();
+  if (data) {
+    set_power_mode_tiled_data = *reinterpret_cast<const PowerModeTiledParams*>(data);
+  }
+  int32_t error = intf_->SetPowerModeTiled(set_power_mode_tiled_data.physical_disp_id,
+                                           set_power_mode_tiled_data.power_mode,
+                                           set_power_mode_tiled_data.tile_h_loc,
+                                           set_power_mode_tiled_data.tile_v_loc);
+  _hidl_cb(error, {}, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseSetPanelBrightnessTiled(const ByteStream &input_params,
+                                                                   perform_cb _hidl_cb) {
+  struct PanelBrightnessTiledParams set_panel_brightness_tiled_data = {};
+
+  const uint8_t *data = input_params.data();
+  if (data) {
+    set_panel_brightness_tiled_data = *reinterpret_cast<const PanelBrightnessTiledParams*>(data);
+  }
+  int32_t error = intf_->SetPanelBrightnessTiled(set_panel_brightness_tiled_data.physical_disp_id,
+                                                 set_panel_brightness_tiled_data.level,
+                                                 set_panel_brightness_tiled_data.tile_h_loc,
+                                                 set_panel_brightness_tiled_data.tile_v_loc);
+  _hidl_cb(error, {}, {});
+}
+
+void DeviceImpl::DeviceClientContext::ParseSetWiderModePreference(const ByteStream &input_params,
+                                                                  perform_cb _hidl_cb) {
+  struct WiderModePrefParams set_wider_mode_pref_data = {};
+
+  const uint8_t *data = input_params.data();
+  if (data) {
+    set_wider_mode_pref_data = *reinterpret_cast<const WiderModePrefParams*>(data);
+  }
+  int32_t error = intf_->SetWiderModePreference(set_wider_mode_pref_data.physical_disp_id,
+                                                set_wider_mode_pref_data.mode_pref);
+  _hidl_cb(error, {}, {});
 }
 
 Return<void> DeviceImpl::perform(uint64_t client_handle, uint32_t op_code,
                                  const ByteStream &input_params, const HandleStream &input_handles,
                                  perform_cb _hidl_cb) {
   int32_t error = 0;
+  std::lock_guard<std::recursive_mutex> lock(death_service_mutex_);
   auto itr = display_config_map_.find(client_handle);
   if (itr == display_config_map_.end()) {
     error = -EINVAL;
@@ -899,6 +1061,9 @@ Return<void> DeviceImpl::perform(uint64_t client_handle, uint32_t op_code,
     case kControlQsyncCallback:
       client->ParseControlQsyncCallback(client_handle, input_params, _hidl_cb);
       break;
+    case kControlIdleStatusCallback:
+      client->ParseControlIdleStatusCallback(client_handle, input_params, _hidl_cb);
+      break;
     case kSendTUIEvent:
       client->ParseSendTUIEvent(input_params, _hidl_cb);
       break;
@@ -911,7 +1076,32 @@ Return<void> DeviceImpl::perform(uint64_t client_handle, uint32_t op_code,
     case kGetSupportedDisplayRefreshRates:
       client->ParseGetSupportedDisplayRefreshRates(input_params, _hidl_cb);
       break;
+    case kIsRCSupported:
+      client->ParseIsRCSupported(input_params, _hidl_cb);
+      break;
+    case kIsSupportedConfigSwitch:
+      client->ParseIsSupportedConfigSwitch(input_params, _hidl_cb);
+      break;
+    case kGetDisplayType:
+      client->ParseGetDisplayType(input_params, _hidl_cb);
+      break;
+    case kAllowIdleFallback:
+      client->ParseAllowIdleFallback(_hidl_cb);
+      break;
+    case kGetDisplayTileCount:
+      client->ParseGetDisplayTileCount(input_params, _hidl_cb);
+      break;
+    case kSetPowerModeTiled:
+      client->ParseSetPowerModeTiled(input_params, _hidl_cb);
+      break;
+    case kSetPanelBrightnessTiled:
+      client->ParseSetPanelBrightnessTiled(input_params, _hidl_cb);
+      break;
+    case kSetWiderModePref:
+      client->ParseSetWiderModePreference(input_params, _hidl_cb);
+      break;
     default:
+      _hidl_cb(-EINVAL, {}, {});
       break;
   }
   return Void();

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2020 The Linux Foundation. All rights reserved.
+* Copyright (c) 2020-2021 The Linux Foundation. All rights reserved.
 *
 * Redistribution and use in source and binary forms, with or without
 * modification, are permitted provided that the following conditions are
@@ -140,6 +140,10 @@ int ClientImpl::GetConfigCount(DisplayType dpy, uint32_t *count) {
 }
 
 int ClientImpl::GetActiveConfig(DisplayType dpy, uint32_t *config) {
+  if (!config) {
+    return -EINVAL;
+  }
+
   ByteStream input_params;
   input_params.setToExternal(reinterpret_cast<uint8_t*>(&dpy), sizeof(DisplayType));
   const uint32_t *output;
@@ -150,11 +154,15 @@ int ClientImpl::GetActiveConfig(DisplayType dpy, uint32_t *config) {
     output_params = params;
   };
 
-  display_config_->perform(client_handle_, kGetActiveConfig, input_params, {}, hidl_cb);
+  if (display_config_) {
+    display_config_->perform(client_handle_, kGetActiveConfig, input_params, {}, hidl_cb);
+  }
 
-  const uint8_t *data = output_params.data();
-  output = reinterpret_cast<const uint32_t*>(data);
-  *config = *output;
+  if (!error) {
+    const uint8_t *data = output_params.data();
+    output = reinterpret_cast<const uint32_t*>(data);
+    *config = *output;
+  }
 
   return error;
 }
@@ -828,6 +836,19 @@ int ClientImpl::ControlQsyncCallback(bool enable) {
   return error;
 }
 
+int ClientImpl::ControlIdleStatusCallback(bool enable) {
+  ByteStream input_params;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&enable), sizeof(bool));
+  int32_t error = 0;
+  auto hidl_cb = [&error] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+  };
+
+  display_config_->perform(client_handle_, kControlIdleStatusCallback, input_params, {}, hidl_cb);
+
+  return error;
+}
+
 int ClientImpl::SendTUIEvent(DisplayType dpy, TUIEventType event_type) {
   struct TUIEventParams input = {dpy, event_type};
   ByteStream input_params;
@@ -891,6 +912,88 @@ int ClientImpl::GetSupportedDisplayRefreshRates(DisplayType dpy,
   return error;
 }
 
+int ClientImpl::IsRCSupported(uint32_t disp_id, bool *supported) {
+  ByteStream input_params;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&disp_id), sizeof(uint32_t));
+  const bool *output;
+  ByteStream output_params;
+  int error = 0;
+  auto hidl_cb = [&error, &output_params] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+    output_params = params;
+  };
+
+  display_config_->perform(client_handle_, kIsRCSupported, input_params, {}, hidl_cb);
+
+  if (!error) {
+    const uint8_t *data = output_params.data();
+    output = reinterpret_cast<const bool*>(data);
+    *supported = *output;
+  }
+
+  return error;
+}
+
+int ClientImpl::IsSupportedConfigSwitch(uint32_t disp_id, uint32_t config, bool *supported) {
+  struct SupportedModesParams input = {disp_id, config};
+  ByteStream input_params;
+  ByteStream output_params;
+  const bool *output;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&input),
+                             sizeof(struct SupportedModesParams));
+  int error = 0;
+  auto hidl_cb = [&error, &output_params] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+    output_params = params;
+  };
+  if (display_config_) {
+    display_config_->perform(client_handle_, kIsSupportedConfigSwitch, input_params, {}, hidl_cb);
+  }
+
+  if (!error) {
+    const uint8_t *data = output_params.data();
+    output = reinterpret_cast<const bool *>(data);
+    *supported = *output;
+  }
+
+  return error;
+}
+
+int ClientImpl::GetDisplayType(uint64_t physical_disp_id, DisplayType *disp_type) {
+  if (!disp_type) {
+    return -EINVAL;
+  }
+  ByteStream input_params;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&physical_disp_id), sizeof(uint64_t));
+  ByteStream output_params;
+  int error = 0;
+  auto hidl_cb = [&error, &output_params] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+    output_params = params;
+  };
+  if (display_config_) {
+    display_config_->perform(client_handle_, kGetDisplayType, input_params, {}, hidl_cb);
+  }
+
+  if (!error) {
+    const uint8_t *data = output_params.data();
+    const DisplayType *output = reinterpret_cast<const DisplayType*>(data);
+    *disp_type = *output;
+  }
+  return error;
+}
+
+int ClientImpl::AllowIdleFallback() {
+  int error = 0;
+  auto hidl_cb = [&error] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+  };
+  if (display_config_) {
+    display_config_->perform(client_handle_, kAllowIdleFallback, {}, {}, hidl_cb);
+  }
+  return error;
+}
+
 void ClientCallback::ParseNotifyCWBBufferDone(const ByteStream &input_params,
                                               const HandleStream &input_handles) {
   const int *error;
@@ -918,6 +1021,90 @@ void ClientCallback::ParseNotifyQsyncChange(const ByteStream &input_params) {
                                qsync_data->qsync_refresh_rate);
 }
 
+void ClientCallback::ParseNotifyIdleStatus(const ByteStream &input_params) {
+  const bool *is_idle;
+  if (callback_ == nullptr || input_params.size() == 0) {
+    return;
+  }
+
+  const uint8_t *data = input_params.data();
+  is_idle = reinterpret_cast<const bool*>(data);
+  callback_->NotifyIdleStatus(*is_idle);
+}
+
+int ClientImpl::GetDisplayTileCount(uint64_t physical_disp_id, uint32_t *num_h_tiles,
+                                    uint32_t *num_v_tiles) {
+  if (!num_h_tiles || !num_v_tiles) {
+    return -EINVAL;
+  }
+  ByteStream input_params;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&physical_disp_id), sizeof(uint64_t));
+  int error = 0;
+  ByteStream output_params;
+  auto hidl_cb = [&error, &output_params] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+    output_params = params;
+  };
+
+  display_config_->perform(client_handle_, kGetDisplayTileCount, input_params, {}, hidl_cb);
+
+  if (!error) {
+    const uint32_t *data = reinterpret_cast<const uint32_t*>(output_params.data());
+    *num_h_tiles = data ? *data : 0;
+    *num_v_tiles = data ? *(data + 1) : 0;
+  }
+
+  return error;
+}
+
+int ClientImpl::SetPowerModeTiled(uint64_t physical_disp_id, PowerMode power_mode,
+                                  uint32_t tile_h_loc, uint32_t tile_v_loc) {
+  struct PowerModeTiledParams input = {physical_disp_id, power_mode, tile_h_loc, tile_v_loc};
+  ByteStream input_params;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&input),
+                             sizeof(struct PowerModeTiledParams));
+  int error = 0;
+  auto hidl_cb = [&error] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+  };
+
+  display_config_->perform(client_handle_, kSetPowerModeTiled, input_params, {}, hidl_cb);
+
+  return error;
+}
+
+int ClientImpl::SetPanelBrightnessTiled(uint64_t physical_disp_id, uint32_t level,
+                                        uint32_t tile_h_loc, uint32_t tile_v_loc) {
+  struct PanelBrightnessTiledParams input = {physical_disp_id, level, tile_h_loc, tile_v_loc};
+  ByteStream input_params;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&input),
+                             sizeof(struct PanelBrightnessTiledParams));
+  int error = 0;
+  auto hidl_cb = [&error] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+  };
+
+  display_config_->perform(client_handle_, kSetPanelBrightnessTiled, input_params, {}, hidl_cb);
+
+  return error;
+}
+
+int ClientImpl::SetWiderModePreference(uint64_t physical_disp_id, WiderModePref mode_pref) {
+  struct WiderModePrefParams input = {physical_disp_id, mode_pref};
+  ByteStream input_params;
+  input_params.setToExternal(reinterpret_cast<uint8_t*>(&input),
+                             sizeof(struct WiderModePrefParams));
+  int error = 0;
+  ByteStream output_params;
+  auto hidl_cb = [&error] (int32_t err, ByteStream params, HandleStream handles) {
+    error = err;
+  };
+
+  display_config_->perform(client_handle_, kSetWiderModePref, input_params, {}, hidl_cb);
+
+  return error;
+}
+
 Return<void> ClientCallback::perform(uint32_t op_code, const ByteStream &input_params,
                                      const HandleStream &input_handles) {
   switch (op_code) {
@@ -926,6 +1113,9 @@ Return<void> ClientCallback::perform(uint32_t op_code, const ByteStream &input_p
       break;
     case kControlQsyncCallback:
       ParseNotifyQsyncChange(input_params);
+      break;
+    case kControlIdleStatusCallback:
+      ParseNotifyIdleStatus(input_params);
       break;
     default:
       break;
